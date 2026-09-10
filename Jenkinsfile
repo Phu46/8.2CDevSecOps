@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    environment {
+        SONAR_TOKEN = credentials('SONAR_TOKEN')
+    }
+
     stages {
         stage('Checkout') {
             steps {
@@ -16,19 +20,34 @@ pipeline {
 
         stage('Run Tests') {
             steps {
-                sh 'npm test || true'   // continue even if tests fail
+                sh 'npm test || true'
             }
         }
 
         stage('Generate Coverage Report') {
             steps {
-                sh 'npm run coverage || true'   // ensure a coverage report exists
+                sh 'npm run coverage || true'
             }
         }
 
         stage('NPM Audit (Security Scan)') {
             steps {
-                sh 'npm audit || true'   // prints known CVEs in the console output
+                sh 'npm audit || true'
+            }
+        }
+
+        stage('SonarCloud Analysis') {
+            steps {
+                sh '''
+                    if [ ! -d sonar-scanner-5.0.1.3006-linux ]; then
+                        curl -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+                        unzip -oq sonar-scanner.zip
+                    fi
+
+                    export PATH="$PATH:$(pwd)/sonar-scanner-5.0.1.3006-linux/bin"
+
+                    sonar-scanner -Dsonar.login=$SONAR_TOKEN
+                '''
             }
         }
     }
