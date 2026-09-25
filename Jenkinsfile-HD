@@ -37,8 +37,7 @@ pipeline {
             steps {
                 echo 'Stage 3: Code Quality - static analysis with SonarCloud'
                 sh '''
-                    npm install -g sonarqube-scanner
-                    sonar-scanner -Dsonar.login=$SONAR_TOKEN
+                    npx --yes sonarqube-scanner -Dsonar.login=$SONAR_TOKEN
                 '''
             }
         }
