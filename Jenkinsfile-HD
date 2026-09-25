@@ -37,10 +37,12 @@ pipeline {
             steps {
                 echo 'Stage 3: Code Quality - static analysis with SonarCloud'
                 sh '''
+                    npm install -g sonarqube-scanner
                     npx --yes sonarqube-scanner -Dsonar.login=$SONAR_TOKEN
                 '''
             }
         }
+
         stage('Security') {
             steps {
                 echo 'Stage 4: Security - dependency vulnerability scan'
@@ -75,8 +77,8 @@ pipeline {
                       -v /var/lib/docker/:/var/lib/docker:ro gcr.io/cadvisor/cadvisor:latest || true
 
                     echo "Running health check against production..."
-                    sleep 5
-                    if docker run --rm --network $NET curlimages/curl:latest -fsS http://$PROD_NAME:$APP_PORT/ > /dev/null; then
+                    sleep 20
+                    if docker run --rm --network $NET curlimages/curl:latest -m 10 -fsS http://$PROD_NAME:$APP_PORT/health > /dev/null; then
                         echo "MONITORING OK: production application is healthy"
                     else
                         echo "ALERT: production health check FAILED - the team would be notified"
