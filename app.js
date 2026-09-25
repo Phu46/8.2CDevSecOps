@@ -1,6 +1,15 @@
 /**
  * Module dependencies.
  */
+// Prevent DB connection failures (Mongo/MySQL not available in this
+// demo container) from crashing the whole process, so the Express
+// server can still start and be reached by the pipeline's health check.
+process.on('uncaughtException', function (err) {
+  console.error('Uncaught exception (ignored so the server keeps running):', err.message);
+});
+process.on('unhandledRejection', function (reason) {
+  console.error('Unhandled rejection (ignored so the server keeps running):', reason);
+});
 
 // mongoose setup
 require('./mongoose-db');
