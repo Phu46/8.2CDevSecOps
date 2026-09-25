@@ -1,6 +1,7 @@
 /**
  * Module dependencies.
  */
+
 // Prevent DB connection failures (Mongo/MySQL not available in this
 // demo container) from crashing the whole process, so the Express
 // server can still start and be reached by the pipeline's health check.
@@ -56,6 +57,12 @@ app.use(session({
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(fileUpload());
+
+// Health check endpoint for the DevOps pipeline's Monitoring stage.
+// Deliberately does not touch Mongo/MySQL so it responds instantly.
+app.get('/health', function (req, res) {
+  res.status(200).send('OK');
+});
 
 // Routes
 app.use(routes.current_user);
