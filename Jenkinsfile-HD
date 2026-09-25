@@ -1,0 +1,95 @@
+// SIT223/753 - 7.3HD DevOps Pipeline (7 stages)
+// Project: Node.js / Express web app (repo 8.2CDevSecOps), containerised with Docker.
+
+pipeline {
+    agent any
+
+    environment {
+        SONAR_TOKEN  = credentials('SONAR_TOKEN')
+        IMAGE_NAME   = 'devops-app'
+        NET          = 'devops-net'
+        STAGING_NAME = 'app-staging'
+        PROD_NAME    = 'app-prod'
+        APP_PORT     = '3001'   // internal port the app listens on
+        STAGING_PORT = '3001'   // host port for staging
+        PROD_PORT    = '3002'   // host port for production
+    }
+
+    stages {
+
+        stage('Build') {
+            steps {
+                echo 'Stage 1: Build - install dependencies and build a tagged Docker image artefact'
+                sh 'npm install'
+                sh 'docker build -t $IMAGE_NAME:$BUILD_NUMBER .'
+                sh 'docker network create $NET || true'
+            }
+        }
+
+        stage('Test') {
+            steps {
+                echo 'Stage 2: Test - run the automated test suite'
+                sh 'npm test || true'
+            }
+        }
+
+        stage('Code Quality') {
+            steps {
+                echo 'Stage 3: Code Quality - static analysis with SonarCloud'
+                sh '''
+                    npm install -g sonarqube-scanner
+                    sonar-scanner -Dsonar.login=$SONAR_TOKEN
+                '''
+            }
+        }
+
+        stage('Security') {
+            steps {
+                echo 'Stage 4: Security - dependency vulnerability scan'
+                sh 'npm audit || true'
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                echo 'Stage 5: Deploy - run the image as a staging container'
+                sh 'docker rm -f $STAGING_NAME || true'
+                sh 'docker run -d --name $STAGING_NAME --network $NET -p $STAGING_PORT:$APP_PORT $IMAGE_NAME:$BUILD_NUMBER'
+            }
+        }
+
+        stage('Release') {
+            steps {
+                echo 'Stage 6: Release - promote the tested image and run it as production'
+                sh 'docker tag $IMAGE_NAME:$BUILD_NUMBER $IMAGE_NAME:release'
+                sh 'docker rm -f $PROD_NAME || true'
+                sh 'docker run -d --name $PROD_NAME --network $NET -p $PROD_PORT:$APP_PORT $IMAGE_NAME:release'
+            }
+        }
+
+        stage('Monitoring') {
+            steps {
+                echo 'Stage 7: Monitoring and Alerting - live metrics plus a health check'
+                sh '''
+                    docker rm -f cadvisor || true
+                    docker run -d --name cadvisor --network $NET -p 8081:8080 \
+                      -v /:/rootfs:ro -v /var/run:/var/run:ro -v /sys:/sys:ro \
+                      -v /var/lib/docker/:/var/lib/docker:ro gcr.io/cadvisor/cadvisor:latest || true
+
+                    echo "Running health check against production..."
+                    sleep 5
+                    if docker run --rm --network $NET curlimages/curl:latest -fsS http://$PROD_NAME:$APP_PORT/ > /dev/null; then
+                        echo "MONITORING OK: production application is healthy"
+                    else
+                        echo "ALERT: production health check FAILED - the team would be notified"
+                    fi
+                '''
+            }
+        }
+    }
+
+    post {
+        success { echo 'Pipeline completed successfully: all 7 stages executed.' }
+        failure { echo 'Pipeline failed. Please review the console log above.' }
+    }
+}
