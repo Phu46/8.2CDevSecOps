@@ -99,6 +99,13 @@ if (app.get('env') == 'development') {
 var token = 'SECRET_TOKEN_f8ed84e8f41e4146403dd4a6bbcea5e418d23a9';
 console.log('token: ' + token);
 
-http.createServer(app).listen(app.get('port'), function () {
-  console.log('Express server listening on port ' + app.get('port'));
-});
+// Only start the HTTP server when this file is run directly (npm start).
+// When the file is required by the automated tests (supertest), the
+// server is not started, so the tests can run without binding a port.
+if (require.main === module) {
+  http.createServer(app).listen(app.get('port'), function () {
+    console.log('Express server listening on port ' + app.get('port'));
+  });
+}
+
+module.exports = app;
