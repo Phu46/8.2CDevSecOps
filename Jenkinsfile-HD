@@ -1,18 +1,31 @@
-// SIT223/753 - 7.3HD DevOps Pipeline (7 stages)
-// Project: Node.js / Express web app (repo 8.2CDevSecOps), containerised with Docker.
+// SIT223 - 7.3HD DevOps Pipeline (resubmission)
+// Addresses marker feedback:
+//  1. Real automated tests (Mocha + Supertest + nyc coverage), published as JUnit,
+//     and the Test stage FAILS the pipeline if any test fails (no "|| true").
+//  2. SonarCloud quality gate enforced in-pipeline (sonar.qualitygate.wait=true);
+//     documented security policy + archived npm audit report (see SECURITY.md).
+//  3. Real MongoDB and MySQL deployed so the application's real functionality works.
+//  4. Staging and production are gated by functional smoke tests, with automatic
+//     rollback to the last known-good image if the production smoke test fails.
+//  5. Monitoring sends REAL alerts to Discord; cAdvisor startup failure is reported
+//     (not silently ignored), and incident/recovery can be demonstrated (monitor.sh).
 
 pipeline {
     agent any
 
     environment {
-        SONAR_TOKEN  = credentials('SONAR_TOKEN')
-        IMAGE_NAME   = 'devops-app'
-        NET          = 'devops-net'
-        STAGING_NAME = 'app-staging'
-        PROD_NAME    = 'app-prod'
-        APP_PORT     = '3001'   // internal port the app listens on
-        STAGING_PORT = '3001'   // host port for staging
-        PROD_PORT    = '3002'   // host port for production
+        SONAR_TOKEN     = credentials('SONAR_TOKEN')
+        DISCORD_WEBHOOK = credentials('DISCORD_WEBHOOK')
+        IMAGE_NAME      = 'devops-app'
+        NET             = 'devops-net'
+        STAGING_NAME    = 'app-staging'
+        PROD_NAME       = 'app-prod'
+        MONGO_NAME      = 'mongo-db'
+        MYSQL_NAME      = 'mysql-db'
+        APP_PORT        = '3001'
+        STAGING_PORT    = '3001'
+        PROD_PORT       = '3002'
+        NODE_OPTIONS    = '--openssl-legacy-provider'
     }
 
     stages {
@@ -28,60 +41,162 @@ pipeline {
 
         stage('Test') {
             steps {
-                echo 'Stage 2: Test - run the automated test suite'
-                sh 'npm test || true'
+                echo 'Stage 2: Test - run real automated tests (unit/integration) with coverage'
+                // No "|| true": a failing test now fails the build and stops the pipeline.
+                sh 'npm test'
+            }
+            post {
+                always {
+                    // Publish test results and coverage as evidence.
+                    junit testResults: 'test-results.xml', allowEmptyResults: false
+                    archiveArtifacts artifacts: 'test-results.xml, coverage/**', allowEmptyArchive: true
+                }
             }
         }
 
         stage('Code Quality') {
             steps {
-                echo 'Stage 3: Code Quality - static analysis with SonarCloud'
+                echo 'Stage 3: Code Quality - SonarCloud static analysis with an enforced quality gate'
                 sh '''
                     npm install -g sonarqube-scanner
-                    npx --yes sonarqube-scanner -Dsonar.login=$SONAR_TOKEN
+                    # qualitygate.wait=true makes the pipeline wait for, and fail on, a failing gate.
+                    npx --yes sonarqube-scanner -Dsonar.login=$SONAR_TOKEN -Dsonar.qualitygate.wait=true
                 '''
             }
         }
 
         stage('Security') {
             steps {
-                echo 'Stage 4: Security - dependency vulnerability scan'
-                sh 'npm audit || true'
+                echo 'Stage 4: Security - dependency vulnerability scan with a documented policy'
+                sh '''
+                    # Capture a machine-readable report as evidence (published below).
+                    npm audit --json > npm-audit-report.json || true
+                    echo "----- npm audit summary -----"
+                    npm audit || true
+                    echo "Security policy: this is a deliberately vulnerable demo app (nodejs-goof)."
+                    echo "The CRITICAL and HIGH findings are inherited from pinned demo dependencies"
+                    echo "and are accepted as a documented known risk for this educational pipeline."
+                    echo "See SECURITY.md for the full policy. In a production project the build would"
+                    echo "fail on new CRITICAL/HIGH findings."
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'npm-audit-report.json', allowEmptyArchive: true
+                }
             }
         }
 
         stage('Deploy') {
             steps {
-                echo 'Stage 5: Deploy - run the image as a staging container'
-                sh 'docker rm -f $STAGING_NAME || true'
-                sh 'docker run -d --name $STAGING_NAME --network $NET -p $STAGING_PORT:$APP_PORT $IMAGE_NAME:$BUILD_NUMBER'
+                echo 'Stage 5: Deploy - start databases, deploy to staging, then gate with a smoke test'
+                sh '''
+                    # --- Databases (real functionality) ---
+                    docker rm -f $MONGO_NAME $MYSQL_NAME || true
+                    docker run -d --name $MONGO_NAME --network $NET mongo:4.4
+                    docker run -d --name $MYSQL_NAME --network $NET \
+                      -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=acme mysql:5.7
+
+                    echo "Waiting for MongoDB..."
+                    for i in $(seq 1 30); do
+                      if docker exec $MONGO_NAME mongo --quiet --eval "db.runCommand({ ping: 1 })" >/dev/null 2>&1; then
+                        echo "MongoDB is ready"; break; fi
+                      sleep 2
+                    done
+
+                    echo "Waiting for MySQL..."
+                    for i in $(seq 1 40); do
+                      if docker exec $MYSQL_NAME mysqladmin ping -h localhost --silent >/dev/null 2>&1; then
+                        echo "MySQL is ready"; break; fi
+                      sleep 3
+                    done
+
+                    # --- Staging container, wired to the databases ---
+                    docker rm -f $STAGING_NAME || true
+                    docker run -d --name $STAGING_NAME --network $NET -p $STAGING_PORT:$APP_PORT \
+                      -e MONGODB_URI=mongodb://$MONGO_NAME:27017/express-todo \
+                      -e MYSQL_HOST=$MYSQL_NAME \
+                      $IMAGE_NAME:$BUILD_NUMBER
+                '''
+                script {
+                    def ok = smokeTest(env.STAGING_NAME, env.APP_PORT)
+                    if (!ok) { error('Staging smoke test failed - stopping before release.') }
+                    echo 'Staging smoke test passed.'
+                }
             }
         }
 
         stage('Release') {
             steps {
-                echo 'Stage 6: Release - promote the tested image and run it as production'
-                sh 'docker tag $IMAGE_NAME:$BUILD_NUMBER $IMAGE_NAME:release'
-                sh 'docker rm -f $PROD_NAME || true'
-                sh 'docker run -d --name $PROD_NAME --network $NET -p $PROD_PORT:$APP_PORT $IMAGE_NAME:release'
+                echo 'Stage 6: Release - promote to production with smoke test and automatic rollback'
+                sh '''
+                    # Keep the current production image as the last known-good for rollback.
+                    if docker image inspect $IMAGE_NAME:release >/dev/null 2>&1; then
+                      docker tag $IMAGE_NAME:release $IMAGE_NAME:release-prev
+                      echo "Saved previous release image as $IMAGE_NAME:release-prev"
+                    fi
+                    docker tag $IMAGE_NAME:$BUILD_NUMBER $IMAGE_NAME:release
+
+                    docker rm -f $PROD_NAME || true
+                    docker run -d --name $PROD_NAME --network $NET -p $PROD_PORT:$APP_PORT \
+                      -e MONGODB_URI=mongodb://$MONGO_NAME:27017/express-todo \
+                      -e MYSQL_HOST=$MYSQL_NAME \
+                      $IMAGE_NAME:release
+                '''
+                script {
+                    def ok = smokeTest(env.PROD_NAME, env.APP_PORT)
+                    if (!ok) {
+                        echo 'Production smoke test FAILED - rolling back to the previous release.'
+                        sh '''
+                            notify() { curl -s -H "Content-Type: application/json" -X POST \
+                              -d "{\\"content\\": \\"$1\\"}" "$DISCORD_WEBHOOK" >/dev/null 2>&1 || true; }
+                            notify "ROLLBACK: production smoke test failed on build #$BUILD_NUMBER. Rolling back to last known-good image."
+                            if docker image inspect $IMAGE_NAME:release-prev >/dev/null 2>&1; then
+                              docker rm -f $PROD_NAME || true
+                              docker run -d --name $PROD_NAME --network $NET -p $PROD_PORT:$APP_PORT \
+                                -e MONGODB_URI=mongodb://$MONGO_NAME:27017/express-todo \
+                                -e MYSQL_HOST=$MYSQL_NAME \
+                                $IMAGE_NAME:release-prev
+                              docker tag $IMAGE_NAME:release-prev $IMAGE_NAME:release
+                              notify "ROLLBACK complete: previous release redeployed to production."
+                            else
+                              notify "ROLLBACK could not run: no previous release image found."
+                            fi
+                        '''
+                        error('Production smoke test failed - rolled back to previous release.')
+                    }
+                    echo 'Production smoke test passed.'
+                }
             }
         }
 
         stage('Monitoring') {
             steps {
-                echo 'Stage 7: Monitoring and Alerting - live metrics plus a health check'
+                echo 'Stage 7: Monitoring and Alerting - live metrics plus a real alert to Discord'
                 sh '''
+                    notify() { curl -s -H "Content-Type: application/json" -X POST \
+                      -d "{\\"content\\": \\"$1\\"}" "$DISCORD_WEBHOOK" >/dev/null 2>&1 || true; }
+
+                    # cAdvisor for live container metrics. A startup failure is reported (not ignored).
                     docker rm -f cadvisor || true
-                    docker run -d --name cadvisor --network $NET -p 8081:8080 \
-                      -v /:/rootfs:ro -v /var/run:/var/run:ro -v /sys:/sys:ro \
-                      -v /var/lib/docker/:/var/lib/docker:ro gcr.io/cadvisor/cadvisor:latest || true
+                    if docker run -d --name cadvisor --network $NET -p 8081:8080 \
+                         -v /:/rootfs:ro -v /var/run:/var/run:ro -v /sys:/sys:ro \
+                         -v /var/lib/docker/:/var/lib/docker:ro gcr.io/cadvisor/cadvisor:latest; then
+                      echo "cAdvisor metrics available on port 8081"
+                    else
+                      echo "WARNING: cAdvisor failed to start"
+                      notify "WARNING: cAdvisor metrics container failed to start on build #$BUILD_NUMBER."
+                    fi
 
                     echo "Running health check against production..."
-                    sleep 20
+                    sleep 10
                     if docker run --rm --network $NET curlimages/curl:latest -m 10 -fsS http://$PROD_NAME:$APP_PORT/health > /dev/null; then
-                        echo "MONITORING OK: production application is healthy"
+                      echo "MONITORING OK: production application is healthy"
+                      notify "DEPLOY OK: build #$BUILD_NUMBER is live and healthy in production (health check passed)."
                     else
-                        echo "ALERT: production health check FAILED - the team would be notified"
+                      echo "ALERT: production health check FAILED"
+                      notify "ALERT: production health check FAILED for build #$BUILD_NUMBER. The on-call team is being notified."
+                      exit 1
                     fi
                 '''
             }
@@ -92,4 +207,19 @@ pipeline {
         success { echo 'Pipeline completed successfully: all 7 stages executed.' }
         failure { echo 'Pipeline failed. Please review the console log above.' }
     }
+}
+
+// Retrying functional smoke test: checks /health AND the DB-backed homepage "/".
+def smokeTest(String target, String port) {
+    return sh(returnStatus: true, script: """
+        ok=1
+        for i in \$(seq 1 20); do
+          h=\$(docker run --rm --network ${NET} curlimages/curl:latest -m 10 -s -o /dev/null -w "%{http_code}" http://${target}:${port}/health || echo 000)
+          r=\$(docker run --rm --network ${NET} curlimages/curl:latest -m 15 -s -o /dev/null -w "%{http_code}" http://${target}:${port}/ || echo 000)
+          echo "smoke attempt \$i: /health=\$h  /=\$r"
+          if [ "\$h" = "200" ] && [ "\$r" = "200" ]; then ok=0; break; fi
+          sleep 3
+        done
+        exit \$ok
+    """) == 0
 }
