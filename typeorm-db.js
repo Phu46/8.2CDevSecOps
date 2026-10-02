@@ -6,11 +6,11 @@ const Users = require("./entity/Users")
 typeorm.createConnection({
   name: "mysql",
   type: "mysql",
-  host: "localhost",
-  port: 3306,
-  username: "root",
-  password: "root",
-  database: "acme",
+  host: process.env.MYSQL_HOST || "localhost",
+  port: process.env.MYSQL_PORT || 3306,
+  username: process.env.MYSQL_USER || "root",
+  password: process.env.MYSQL_PASSWORD || "root",
+  database: process.env.MYSQL_DATABASE || "acme",
   synchronize: true,
   "logging": true,
   entities: [
@@ -42,5 +42,5 @@ typeorm.createConnection({
   return Promise.all(inserts)
 }).catch((err) => {
   console.error('failed connecting and seeding users to the MySQL database')
-  console.error(err)
+  console.error(err && err.message)
 })
