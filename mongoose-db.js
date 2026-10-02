@@ -44,8 +44,19 @@ console.log("Using Mongo URI " + mongoUri);
 
 mongoose.connect(mongoUri);
 
+// Handle connection errors so a missing or unreachable MongoDB does not
+// throw an uncaught exception. This keeps the server running and lets the
+// automated tests pass cleanly when they do not depend on the database.
+mongoose.connection.on('error', function (err) {
+  console.error('MongoDB connection error (handled):', err && err.message);
+});
+
 User = mongoose.model('User');
 User.find({ username: 'admin@snyk.io' }).exec(function (err, users) {
+  if (err) {
+    console.error('MongoDB query error (handled):', err && err.message);
+    return;
+  }
   console.log(users);
   if (users.length === 0) {
     console.log('no admin');
