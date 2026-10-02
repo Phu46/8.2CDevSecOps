@@ -12,7 +12,18 @@
     "start": "NODE_OPTIONS=--openssl-legacy-provider node app.js",
     "build": "browserify -r jquery > public/js/bundle.js",
     "cleanup": "mongo express-todo --eval 'db.todos.remove({});'",
-    "test": "snyk test"
+    "test": "nyc mocha --reporter mocha-junit-reporter --timeout 10000 --exit \"test/**/*.test.js\"",
+    "test:local": "mocha --reporter spec --timeout 10000 --exit \"test/**/*.test.js\"",
+    "securitytest": "snyk test"
+  },
+  "nyc": {
+    "reporter": [
+      "text",
+      "text-summary",
+      "lcov"
+    ],
+    "report-dir": "coverage",
+    "all": false
   },
   "dependencies": {
     "adm-zip": "0.4.7",
@@ -50,8 +61,12 @@
   },
   "devDependencies": {
     "browserify": "^13.1.1",
+    "mocha": "^10.2.0",
+    "mocha-junit-reporter": "^2.2.1",
     "nodemon": "^2.0.7",
-    "snyk": "^1.244.0"
+    "nyc": "^15.1.0",
+    "snyk": "^1.244.0",
+    "supertest": "^6.3.4"
   },
   "license": "Apache-2.0"
 }
