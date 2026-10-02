@@ -1,4 +1,4 @@
-// SIT223 - 7.3HD DevOps Pipeline (resubmission)
+// SIT223/753 - 7.3HD DevOps Pipeline (resubmission)
 // Addresses marker feedback:
 //  1. Real automated tests (Mocha + Supertest + nyc coverage), published as JUnit,
 //     and the Test stage FAILS the pipeline if any test fails (no "|| true").
@@ -95,7 +95,8 @@ pipeline {
                     docker rm -f $MONGO_NAME $MYSQL_NAME || true
                     docker run -d --name $MONGO_NAME --network $NET mongo:4.4
                     docker run -d --name $MYSQL_NAME --network $NET \
-                      -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=acme mysql:5.7
+                      -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=acme \
+                      mysql:8.0 --default-authentication-plugin=mysql_native_password
 
                     echo "Waiting for MongoDB..."
                     for i in $(seq 1 30); do
